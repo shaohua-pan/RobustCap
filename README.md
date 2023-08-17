@@ -4,8 +4,8 @@
 
 [comment]: <> (Motion Capture". This repository contains the system implementation and evaluation. See [Project Page]&#40;&#41;.)
 <div align="left">
-<img src="assets/occlusion.gif" width="240" height="180"> <img src="assets/sports.gif" width="240" height="180"> <img src="assets/dark.gif" width="240" height="180">
-<img src="assets/comparison.gif" width="240" height="180">
+<img src="assets/occlusion.gif" width="320" height="180"> <img src="assets/sports.gif" width="320" height="180"> <img src="assets/dark.gif" width="320" height="180">
+<img src="assets/comparison.gif" width="320" height="180">
 <br>
 </div>
 
