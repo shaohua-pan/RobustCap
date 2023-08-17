@@ -1,0 +1,16 @@
+bleak==0.20.2
+keyboard==0.13.5
+matplotlib==3.5.2
+mediapipe==0.9.0
+numpy==1.23.5
+numpy_quaternion==2022.4.3
+opencv_python_headless==4.2.0.34
+pybullet==3.2.5
+pyrender==0.1.45
+quaternion==3.5.2.post4
+smplx==0.1.28
+thop==0.1.0.post2207010342
+tqdm==4.64.0
+trimesh==3.12.9
+vctoolkit==0.1.5.39
+wandb==0.14.0
