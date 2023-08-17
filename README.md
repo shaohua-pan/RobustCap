@@ -1,6 +1,8 @@
 # RobustCap
-Code for our SIGGRAPH ASIA 2023 [paper]() "Fusing Monocular Images and Sparse IMU Signals for Real-time Human
-Motion Capture". This repository contains the system implementation and evaluation. See [Project Page]().
+
+[comment]: <> (Code for our SIGGRAPH ASIA 2023 [paper]&#40;&#41; "Fusing Monocular Images and Sparse IMU Signals for Real-time Human)
+
+[comment]: <> (Motion Capture". This repository contains the system implementation and evaluation. See [Project Page]&#40;&#41;.)
 <div align="left">
 <img src="assets/occlusion.gif" height="200"> <img src="assets/sports.gif" height="200"> <img src="assets/dark.gif" height="200">
 <img src="assets/comparison.gif" height="200">
