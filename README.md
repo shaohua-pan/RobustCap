@@ -3,6 +3,7 @@ Code for our SIGGRAPH ASIA 2023 [paper]() "Fusing Monocular Images and Sparse IM
 Motion Capture". This repository contains the system implementation and evaluation. See [Project Page]().
 <div align="left">
 <img src="assets/occlusion.gif" height="200"> <img src="assets/sports.gif" height="200"> <img src="assets/dark.gif" height="200">
+<img src="assets/comparison.gif" height="200">
 <br>
 </div>
 
