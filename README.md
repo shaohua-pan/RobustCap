@@ -26,6 +26,9 @@ We provide the evaluation code for AIST++, TotalCapture, 3DPW and 3DPW-OCC. The 
 ```
 python evaluate.py
 ```
+## Visualization
+We provide the visualization code for AIST++. You can use view_aist function in evaluate.py to visualize the results. By indicating seq_idx and cam_idx, you can visualize the results of a specific sequence and camera. Set vis=True to visualize the overlay results. Use body_model.view_motion to visualize the open3d results.
+
 ## Todo
 - Visualization.
 - Live demo code.
