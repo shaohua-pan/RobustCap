@@ -36,9 +36,6 @@ class Net(torch.nn.Module):
     tran_filter_num = 0.05
 
     live = False
-    if live:
-        conf_range = (0.85, 0.9)
-        tran_filter_num = 0.01
     update_vision_freq = 30
     update_vision_count = 0
     j_temp = None
@@ -87,6 +84,9 @@ class Net(torch.nn.Module):
         self.last_tran = None
         self.floor_y = []
         self.first_reach = True
+        if self.live:
+            self.conf_range = (0.85, 0.9)
+            self.tran_filter_num = 0.01
 
     def reset_states(self):
         """

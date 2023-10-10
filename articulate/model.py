@@ -302,7 +302,7 @@ class ParametricModel:
         verts = torch.cat(v_list, dim=1).cpu().numpy()
         faces = np.concatenate(f_list)
         if verts.shape[0] > 1:
-            vo3d.render_sequence_3d(verts, faces, 720, 720, 'a.avi', fps, visible=True)
+            vo3d.render_sequence_3d(verts, faces, 720, 720, 'a.mp4', fps, visible=True)
         else:
             vo3d.vis_mesh(verts[0], faces)
 

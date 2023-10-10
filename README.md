@@ -27,10 +27,18 @@ We provide the evaluation code for AIST++, TotalCapture, 3DPW and 3DPW-OCC. The 
 python evaluate.py
 ```
 ## Visualization
-We provide the visualization code for AIST++. You can use view_aist function in evaluate.py to visualize the results. By indicating seq_idx and cam_idx, you can visualize the results of a specific sequence and camera. Set vis=True to visualize the overlay results. Use body_model.view_motion to visualize the open3d results.
+### Visualization by open3d or overlay
+We provide the visualization code for AIST++. You can use view_aist function in evaluate.py to visualize the results. By indicating seq_idx and cam_idx, you can visualize the results of a specific sequence and camera. Set vis=True to visualize the overlay results (you need to download the origin AIST++ videos and put them onto config.paths.aist_raw_dir). Use body_model.view_motion to visualize the open3d results.
+### Visualization by unity
+You can use view_aist_unity function in evaluate.py to visualize the results. By indicating seq_idx and cam_idx, you can visualize the results of a specific sequence and camera.
+- Download unity assets from [here](https://drive.google.com/drive/u/0/folders/1jwCi4iDcFdpkYv4nbZHJy3L3RpSpq_j9).
+- Create a unity 3D project and use the downloaded assets, and create a directory UserData/Motion.
+- For the unity scripts, use Set Motion (set Fps to 60) and do not use Record Video.
+- Run view_aist_unity and copy the generated files to UserData/Motion.
+
+Then you can run the unity scripts to visualize the results.
 
 ## Todo
-- Visualization.
 - Live demo code.
 ## Citation  
 ```

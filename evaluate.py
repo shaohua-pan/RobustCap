@@ -351,7 +351,7 @@ def view_aist(seq_idx=0, cam_idx=0, vis=True, run_smplify=True):
     if run_smplify:
         pose, tran, update = smplify_runner(pose, tran, j2dc_opt, oric, batch_size=pose.shape[0], lr=0.001, use_lbfgs=True, opt_steps=1, cam_k=Kinv.inverse(), use_head=True)
     # you can use this command to view the result by open3d, but without overlay.
-    body_model.view_motion([pose[60:], posec[60:len(j2dc)]])
+    body_model.view_motion([pose, posec[:len(j2dc)]])
     if vis:
         video = cv2.VideoCapture(os.path.join(paths.aist_raw_dir, 'video', dataset['name'][seq_idx].replace('cAll', 'c0%d' % (cam_idx + 1)) + '.mp4'))
         writer = cv2.VideoWriter(os.path.join(save_path, 'result.mp4'), cv2.VideoWriter_fourcc(*'mp4v'), 30, (1920, 1080))
@@ -370,18 +370,63 @@ def view_aist(seq_idx=0, cam_idx=0, vis=True, run_smplify=True):
         writer.release()
 
 
+def view_aist_unity(seq_idx=0, cam_idx=0):
+    dataset = torch.load(os.path.join(paths.aist_dir, 'test.pt'))
+    Tcw = dataset['cam_T'][seq_idx][cam_idx]
+    Kinv = dataset['cam_K'][seq_idx][cam_idx].inverse()
+    oric = Tcw[:3, :3].matmul(dataset['imu_ori'][seq_idx])
+    accc = Tcw.matmul(art.math.append_zero(dataset['imu_acc'][seq_idx]).unsqueeze(-1)).squeeze(-1)[..., :3]
+    posec = art.math.axis_angle_to_rotation_matrix(dataset['pose'][seq_idx]).view(-1, 24, 3, 3)
+    posec[:, 0] = Tcw[:3, :3].matmul(posec[:, 0])
+    tranc = Tcw.matmul(art.math.append_one(dataset['tran'][seq_idx]).unsqueeze(-1)).squeeze(-1)[..., :3]
+    j2dc = dataset['joint2d_mp'][seq_idx][cam_idx][..., :2]
+    j2dc[..., 0] = j2dc[..., 0] * 1920
+    j2dc[..., 1] = j2dc[..., 1] * 1080
+    j2dc_opt = j2dc.clone()
+    j2dc_opt = art.math.append_one(j2dc_opt)
+    j2dc = Kinv.matmul(art.math.append_one(j2dc).unsqueeze(-1)).squeeze(-1)
+    j2dc[..., -1] = dataset['joint2d_mp'][seq_idx][cam_idx][..., -1]
+    j2dc_opt[..., -1] = dataset['joint2d_mp'][seq_idx][cam_idx][..., -1]
+    j2dc, accc, oric = j2dc.to(device), accc.to(device), oric.to(device)
+    from net.sig_mp import Net
+    Net.live = True
+    Net.gravityc = Tcw[:3, :3].mm(torch.tensor([0, -1, 0.]).view(3, 1)).view(3)
+    net = Net().to(device)
+    net.load_state_dict(torch.load(os.path.join(paths.weight_dir, Net.name, 'best_weights.pt')))
+    net.eval()
+    pose, tran, jo = [], [], []
+    first_tran = tranc[0]
+    for i in tqdm.trange(len(j2dc)):
+        if i == 0 and first_tran is not None:
+            p, t = net.forward_online(j2dc[i], accc[i], oric[i], first_tran)
+        else:
+            p, t = net.forward_online(j2dc[i], accc[i], oric[i])
+        pose.append(p)
+        tran.append(t)
+    pose, tran = torch.stack(pose), torch.stack(tran)
+    pose[:, 0] = Tcw[:3, :3].T.matmul(pose[:, 0])
+    tran = torch.matmul(Tcw[:3, :3].T, tran.unsqueeze(-1)).squeeze(-1) + Tcw[:3, 3]
+    tran_offset = tran[0]
+    tran = tran - tran_offset
+    if not os.path.exists(os.path.join(paths.offline_dir, f'aist_{seq_idx}_{cam_idx}_unity')):
+        os.mkdir(os.path.join(paths.offline_dir, f'aist_{seq_idx}_{cam_idx}_unity'))
+    if not os.path.exists(os.path.join(paths.offline_dir, f'aist_{seq_idx}_{cam_idx}_unity', '0')):
+        os.mkdir(os.path.join(paths.offline_dir, f'aist_{seq_idx}_{cam_idx}_unity', '0'))
+    body_model.save_unity_motion(pose, tran, os.path.join(paths.offline_dir, f'aist_{seq_idx}_{cam_idx}_unity', '0'))
+
 
 if __name__ == '__main__':
 
     # ----------------------------eval totalcapture---------------------------#
     # evaluate_tc_ours()
 
-    # ----------------------------eval aist++---------------------------
+    # ----------------------------eval aist++---------------------------#
     # evaluate_aist_ours()
 
-    # ----------------------------eval 3dpw & 3dpw-occ---------------------------
+    # ----------------------------eval 3dpw & 3dpw-occ---------------------------#
     # evaluate_pw3d_ours(occ=False)
     # evaluate_pw3d_ours(occ=True)
 
-    # ----------------------------vis aist++---------------------------
-    view_aist()
+    # ----------------------------vis aist++---------------------------#
+    # view_aist()
+    view_aist_unity()
