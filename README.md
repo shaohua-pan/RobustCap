@@ -38,9 +38,22 @@ You can use view_aist_unity function in evaluate.py to visualize the results. By
 
 Then you can run the unity scripts to visualize the results.
 
+[comment]: <> (## Live Demo)
+
+[comment]: <> (We use 6 Xsens IMUs and a monocular webcam. For different hardwares, you may need to modify the code.)
+
+[comment]: <> (- Calibrate the camera. We give a simple calibration code in `articulate/utils/executables/RGB_camera_calibration.py`. Then copy the camera intrinsic parameters to `config.paths.camera_intrinsic_path`.)
+
+[comment]: <> (- )
 ## Todo
 - Live demo code.
 ## Citation  
 ```
-TBA
+@inproceedings{pan2023fusing,
+title={Fusing Monocular Images and Sparse IMU Signals for Real-time Human Motion Capture},
+author={Pan, Shaohua and Ma, Qi and Yi, Xinyu and Hu, Weifeng and Wang, Xiong and Zhou, Xingkang and Li, Jijunnan and Xu, Feng},
+booktitle={SIGGRAPH Asia 2023 Conference Papers},
+pages={1--11},
+year={2023}
+}
 ```
