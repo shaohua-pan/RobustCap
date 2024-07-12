@@ -12,20 +12,10 @@ import numpy as np
 import keyboard
 import articulate as art
 from articulate.utils.print import *
+import config
 
 
-imus_addr = [
-    # 'D4:22:CD:00:36:03',
-    'D4:22:CD:00:44:6E',
-    'D4:22:CD:00:45:E6',
-    'D4:22:CD:00:45:EC',
-    # 'D4:22:CD:00:46:0F',
-    'D4:22:CD:00:32:32',
-    # 'D4:22:CD:00:36:80',
-    # 'D4:22:CD:00:36:04',
-    # 'D4:22:CD:00:32:3E',
-    # 'D4:22:CD:00:35:4E',
-]
+imus_addr = config.Live.imu_addrs
 
 addr = ('127.0.0.1', 8777)
 ss = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)

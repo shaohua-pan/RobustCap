@@ -4,3 +4,4 @@ r"""
 
 from .rnn import *
 from .io import *
+from .train import *

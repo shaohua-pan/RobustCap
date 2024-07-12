@@ -38,15 +38,23 @@ You can use view_aist_unity function in evaluate.py to visualize the results. By
 
 Then you can run the unity scripts to visualize the results.
 
-[comment]: <> (## Live Demo)
+## Live Demo
 
-[comment]: <> (We use 6 Xsens IMUs and a monocular webcam. For different hardwares, you may need to modify the code.)
+We use 6 Xsens Dot IMUs and a monocular webcam. For different hardwares, you may need to modify the code.
 
-[comment]: <> (- Calibrate the camera. We give a simple calibration code in `articulate/utils/executables/RGB_camera_calibration.py`. Then copy the camera intrinsic parameters to `config.paths.camera_intrinsic_path`.)
+- Config the IMU and camera parameters in `config.Live`.
+- Calibrate the camera. We give a simple calibration code in `articulate/utils/executables/RGB_camera_calibration.py`. Then copy the camera intrinsic parameters to `config.Live.camera_intrinsic`.
+- Connect the IMUs using the code `articulate/utils/executables/xsens_dot_server_no_gui.py`. Following the instructions in the command line including “connect, start streaming, reset heading, print sensor angle (make sure the angles are similar when you align the IMUs)”.
+- Run the live detector code `live_detector.py` and you can see the camera reading.
+- Run the Unity scene to render the results. You can write your own code or use the scene from Transpose (https://github.com/Xinyu-Yi/TransPose).
+- Run the live server code `live_server.py` to run our networks and send the results to Unity.
 
-[comment]: <> (- )
-## Todo
-- Live demo code.
+After doing this, you can see the real-time results in Unity. If you are encountering any problems, please feel free to issue.
+
+## Training
+
+run `net/sig_mp.py`.
+
 ## Citation  
 ```
 @inproceedings{pan2023fusing,

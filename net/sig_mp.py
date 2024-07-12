@@ -10,6 +10,10 @@ import articulate as art
 from articulate.utils.torch import *
 from config import *
 from torch.nn.functional import relu
+from torch.utils.data import DataLoader, ConcatDataset
+import tqdm
+from articulate.utils.print import *
+import random
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 body_model = art.ParametricModel(paths.smpl_file, device=device)
@@ -293,3 +297,561 @@ def sync_mp3d(vert, joint):
     syn_3d[25:27] = joint[4:6].clone()
     syn_3d[27:29] = joint[7:9].clone()
     return syn_3d
+
+def train_rnn2():
+    def AISTDataset(data_dir, kind, split_size=-1):
+        r"""
+        kind in ['train', 'val', 'test']
+        """
+        print('Reading %s dataset "%s"' % (kind, data_dir))
+        dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+        data, label = [], []
+        for i in tqdm.trange(len(dataset['pose'])):  # ith sequence
+            Rrw = art.math.axis_angle_to_rotation_matrix(dataset['pose'][i][:, :3]).transpose(1, 2)
+            orir = Rrw.unsqueeze(1).matmul(dataset['imu_ori'][i])
+            accr = Rrw.unsqueeze(1).matmul(dataset['imu_acc'][i].unsqueeze(-1)).squeeze(-1)
+            j3dr = Rrw.unsqueeze(1).matmul(dataset['joint3d'][i].unsqueeze(-1)).squeeze(-1)
+            j3dr = j3dr[:, 1:] - j3dr[:, :1]
+            data.append(torch.cat((accr.flatten(1), orir.flatten(1)), dim=1)[1:-1])
+            label.append(j3dr.flatten(1)[1:-1])
+        return RNNWithInitDataset(data, label, split_size=split_size, device=device)
+
+    def AMASSDataset(data_dir, kind, split_size=-1):
+        r"""
+        kind in ['train', 'val', 'test']
+        """
+        print('Reading %s dataset "%s"' % (kind, data_dir))
+        dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+        data, label = [], []
+        for i in tqdm.trange(len(dataset['imu_acc'])):
+            p = art.math.axis_angle_to_rotation_matrix(dataset['pose'][i]).view(-1, 24, 3, 3)
+            j3dr = (dataset['joint3d'][i][:, 1:] - dataset['joint3d'][i][:, :1]).bmm(p[:, 0])
+            accw = dataset['imu_acc'][i]  # N, 5, 3
+            oriw = dataset['imu_ori'][i]  # N, 5, 3, 3
+            Rrw = p[:, 0].transpose(1, 2)
+            accr = Rrw.unsqueeze(1).matmul(accw.unsqueeze(-1))
+            orir = Rrw.unsqueeze(1).matmul(oriw)
+            data.append(torch.cat((accr.flatten(1), orir.flatten(1)), dim=1)[1:-1])
+            label.append(j3dr.flatten(1)[1:-1])
+        return RNNWithInitDataset(data, label, split_size=split_size, device=device)
+
+    print_yellow('=================== Training RNN2 ===================')
+
+    rnn_mse_loss_fn = RNNLossWrapper(torch.nn.MSELoss())
+    rnn_dist_eval_fn = RNNLossWrapper(art.PositionErrorEvaluator())
+    save_dir = os.path.join(paths.weight_dir, Net.name, 'rnn2')
+    net = Net().rnn2.to(device)
+
+    train_dataloader = DataLoader(ConcatDataset([
+        AISTDataset(paths.aist_dir, kind='train', split_size=200),
+        AMASSDataset(paths.amass_dir, kind='train', split_size=200)
+    ]), 256, shuffle=True, collate_fn=RNNDataset.collate_fn)
+    valid_dataloader = DataLoader(ConcatDataset([
+        AISTDataset(paths.aist_dir, kind='val'),
+        AMASSDataset(paths.amass_dir, kind='val')
+    ]), 64, collate_fn=RNNDataset.collate_fn)
+
+    train(net, train_dataloader, valid_dataloader, save_dir, loss_fn=rnn_mse_loss_fn, eval_fn=rnn_dist_eval_fn,
+          num_epoch=150, num_iter_between_vald=20, clip_grad_norm=1, load_last_states=True,
+          eval_metric_names=['distance error (m)'], wandb_project_name='oppo_5imu',
+          wandb_config=None, wandb_watch=True, wandb_name='rnn2')
+
+def train_rnn3():
+    def augment_fn(x):
+        x = x.clone()
+        x[:, -69:] = torch.normal(x[:, -69:], 0.04)
+        return x
+
+    def AISTDataset(data_dir, kind, split_size=-1):
+        r"""
+        kind in ['train', 'val', 'test']
+        """
+        print('Reading %s dataset "%s"' % (kind, data_dir))
+        dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+        data, label = [], []
+        for i in tqdm.trange(len(dataset['pose'])):  # ith sequence
+            Rrw = art.math.axis_angle_to_rotation_matrix(dataset['pose'][i][:, :3]).transpose(1, 2)
+            orir = Rrw.unsqueeze(1).matmul(dataset['imu_ori'][i])
+            accr = Rrw.unsqueeze(1).matmul(dataset['imu_acc'][i].unsqueeze(-1)).squeeze(-1)
+            j3dr = Rrw.unsqueeze(1).matmul(dataset['joint3d'][i].unsqueeze(-1)).squeeze(-1)
+            j3dr = j3dr[:, 1:] - j3dr[:, :1]
+            v3dw = (dataset['joint3d'][i][2:] - dataset['joint3d'][i][:-2]) * 30
+            v3dw = torch.cat((torch.zeros(1, 3), v3dw[:, 0], torch.zeros(1, 3)), dim=0) / vel_scale
+            v3dr = Rrw.matmul(v3dw.unsqueeze(-1)).squeeze(-1)
+            data.append(torch.cat((accr.flatten(1), orir.flatten(1), j3dr.flatten(1)), dim=1)[1:-1])
+            label.append(v3dr.flatten(1)[1:-1])
+        return RNNDataset(data, label, split_size=split_size, augment_fn=augment_fn, device=device)
+
+    def AMASSDataset(data_dir, kind, split_size=-1):
+        r"""
+        kind in ['train', 'val', 'test']
+        """
+        print('Reading %s dataset "%s"' % (kind, data_dir))
+        dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+        data, label = [], []
+        for i in tqdm.trange(len(dataset['imu_acc'])):
+            p = art.math.axis_angle_to_rotation_matrix(dataset['pose'][i]).view(-1, 24, 3, 3)
+            j3dr = (dataset['joint3d'][i][:, 1:] - dataset['joint3d'][i][:, :1]).bmm(p[:, 0])
+            accw = dataset['imu_acc'][i]  # N, 5, 3
+            oriw = dataset['imu_ori'][i]  # N, 5, 3, 3
+            Rrw = p[:, 0].transpose(1, 2)
+            accr = Rrw.unsqueeze(1).matmul(accw.unsqueeze(-1))
+            orir = Rrw.unsqueeze(1).matmul(oriw)
+            v3dw = (dataset['joint3d'][i][2:] - dataset['joint3d'][i][:-2]) * 30
+            v3dw = torch.cat((torch.zeros(1, 3), v3dw[:, 0], torch.zeros(1, 3)), dim=0) / vel_scale
+            v3dr = Rrw.matmul(v3dw.unsqueeze(-1)).squeeze(-1)
+            data.append(torch.cat((accr.flatten(1), orir.flatten(1), j3dr.flatten(1)), dim=1)[1:-1])
+            label.append(v3dr.flatten(1)[1:-1])
+        return RNNDataset(data, label, split_size=split_size, augment_fn=augment_fn, device=device)
+
+    print_yellow('=================== Training RNN3 ===================')
+
+    def loss_fn(x, y):
+        l = x.shape[0]
+        f1 = mse(x, y)
+        f6 = mse(x[l % 6:].view(-1, 6, 3).sum(dim=1), y[l % 6:].view(-1, 6, 3).sum(dim=1))
+        f20 = mse(x[l % 20:].view(-1, 20, 3).sum(dim=1), y[l % 20:].view(-1, 20, 3).sum(dim=1))
+        f60 = mse(x[l % 60:].view(-1, 60, 3).sum(dim=1), y[l % 60:].view(-1, 60, 3).sum(dim=1))
+        return f1 + f6 + f20 + f60
+
+    mse = torch.nn.MSELoss()
+    rnn_loss_fn = RNNLossWrapper(loss_fn)
+    save_dir = os.path.join(paths.weight_dir, Net.name, 'rnn3')
+    net = Net().rnn3.to(device)
+
+    train_dataloader = DataLoader(ConcatDataset([
+        AISTDataset(paths.aist_dir, kind='train', split_size=200),
+        AMASSDataset(paths.amass_dir, kind='train', split_size=200)
+    ]), 256, shuffle=True, collate_fn=RNNDataset.collate_fn)
+    valid_dataloader = DataLoader(ConcatDataset([
+        AISTDataset(paths.aist_dir, kind='val'),
+        AMASSDataset(paths.amass_dir, kind='val')
+    ]), 64, collate_fn=RNNDataset.collate_fn)
+
+    train(net, train_dataloader, valid_dataloader, save_dir, loss_fn=rnn_loss_fn, eval_fn=rnn_loss_fn,
+          num_epoch=200, num_iter_between_vald=20, clip_grad_norm=1, load_last_states=True,
+          wandb_project_name='oppo_5imu',
+          wandb_config=None, wandb_watch=True, wandb_name='rnn3')
+
+def train_rnn4():
+
+    def augment_fn(x):
+        # x_drop = x[:, :-33*3]
+        # x_drop = F.dropout(x_drop, 0.4)
+        # return torch.cat((x_drop, x[:, -33*3:]), dim=1)
+        return x
+
+    def AISTDataset(data_dir, kind, split_size=-1):
+        r"""
+        kind in ['train', 'val', 'test']
+        """
+        print('Reading %s dataset "%s"' % (kind, data_dir))
+        dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+        data, label = [], []
+        for i in tqdm.trange(len(dataset['pose'])):  # ith sequence
+            for j in range(9):  # jth camera view
+                if dataset['joint2d_mp'][i][j] is None: continue
+                Tcw = dataset['cam_T'][i][j]
+                Kinv = dataset['cam_K'][i][j].inverse()
+                oric = Tcw[:3, :3].matmul(dataset['imu_ori'][i])
+                accc = Tcw.matmul(art.math.append_zero(dataset['imu_acc'][i]).unsqueeze(-1)).squeeze(-1)[..., :3]
+                j3dc = Tcw.matmul(art.math.append_one(dataset['joint3d'][i]).unsqueeze(-1)).squeeze(-1)[..., :3]
+                j3dc = j3dc[:, 1:] - j3dc[:, :1]
+                j2dc = torch.zeros(len(oric), 33, 3)
+                j2dc[..., :2] = dataset['joint2d_mp'][i][j][..., :2]
+                j2dc[..., 0] = j2dc[..., 0] * 1920
+                j2dc[..., 1] = j2dc[..., 1] * 1080
+                j2dc = Kinv.matmul(art.math.append_one(j2dc[..., :2]).unsqueeze(-1)).squeeze(-1)
+                j2dc[..., :2] = j2dc[..., :2] / (get_bbox_scale(j2dc)).view(-1, 1, 1)
+                # do the same thing as cliff bbox info
+                j2dc[:, 24:, :2] = j2dc[:, 24:, :2] - j2dc[:, 23:24, :2]
+                j2dc[:, :23, :2] = j2dc[:, :23, :2] - j2dc[:, 23:24, :2]
+                j2dc[..., -1] = dataset['joint2d_mp'][i][j][..., -1]
+                data.append(torch.cat((accc.flatten(1), oric.flatten(1), j2dc.flatten(1)), dim=1)[1:-1])
+                label.append(j3dc.flatten(1)[1:-1])
+
+                # occlusion data
+                if dataset['joint2d_occ'][i][j] is None or len(dataset['joint2d_occ'][i][j]) != len(oric): continue
+                j2dc_occ = torch.zeros(len(oric), 33, 3)
+                j2dc_occ[..., :2] = dataset['joint2d_occ'][i][j][..., :2]
+                j2dc_occ[..., 0] = j2dc_occ[..., 0] * 1920
+                j2dc_occ[..., 1] = j2dc_occ[..., 1] * 1080
+                j2dc_occ = Kinv.matmul(art.math.append_one(j2dc_occ[..., :2]).unsqueeze(-1)).squeeze(-1)
+                j2dc[..., :2] = j2dc[..., :2] / (get_bbox_scale(j2dc_occ)).view(-1, 1, 1)
+                j2dc_occ[:, 24:, :2] = j2dc_occ[:, 24:, :2] - j2dc_occ[:, 23:24, :2]
+                j2dc_occ[:, :23, :2] = j2dc_occ[:, :23, :2] - j2dc_occ[:, 23:24, :2]
+                j2dc_occ[..., -1] = dataset['joint2d_occ'][i][j][..., -1]
+                data.append(torch.cat((accc.flatten(1), oric.flatten(1), j2dc_occ.flatten(1)), dim=1)[1:-1])
+                label.append(j3dc.flatten(1)[1:-1])
+        return RNNDataset(data, label, split_size=split_size, device=device, augment_fn=augment_fn)
+
+    class AMASSDataset(RNNDataset):
+        r"""
+        kind in ['train', 'val', 'test']
+        """
+
+        def __init__(self, data_dir, kind, split_size=-1):
+            print('Reading %s dataset "%s"' % (kind, data_dir))
+            dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+            data, label = [], []
+            self.conf = torch.load('data/dataset_work/syn_c.pt')
+            for i in tqdm.trange(len(dataset['imu_acc'])):
+                accw = dataset['imu_acc'][i]  # N, 5, 3
+                oriw = dataset['imu_ori'][i]  # N, 5, 3, 3
+                root = dataset['joint3d'][i][0, 0].clone()
+                j3dw = dataset['joint3d'][i] - root  # N, 33, 3
+                j3dw_mp = dataset['sync_3d_mp'][i] - root  # N, 33, 3
+                j3dw_mp[:, 11] = j3dw[:, 16].clone()
+                j3dw_mp[:, 12] = j3dw[:, 17].clone()
+                j3dw_mp[:, 13] = j3dw[:, 18].clone()
+                j3dw_mp[:, 14] = j3dw[:, 19].clone()
+                j3dw_mp[:, 15] = j3dw[:, 20].clone()
+                j3dw_mp[:, 16] = j3dw[:, 21].clone()
+                j3dw_mp[:, 23] = j3dw[:, 1].clone()
+                j3dw_mp[:, 24] = j3dw[:, 2].clone()
+                j3dw_mp[:, 25] = j3dw[:, 4].clone()
+                j3dw_mp[:, 26] = j3dw[:, 5].clone()
+                j3dw_mp[:, 27] = j3dw[:, 7].clone()
+                j3dw_mp[:, 28] = j3dw[:, 8].clone()
+                data.append(torch.cat((accw.flatten(1), oriw.flatten(1), j3dw_mp.flatten(1)), dim=1)[1:-1])
+                label.append(j3dw.flatten(1)[1:-1])
+            super(AMASSDataset, self).__init__(data, label, split_size=split_size)
+
+        def __getitem__(self, i):
+            data, label = super(AMASSDataset, self).__getitem__(i)
+            accw = data[:, :18].reshape(-1, 6, 3, 1)
+            oriw = data[:, 18:18+6*3*3].reshape(-1, 6, 3, 3)
+            j3dw_mp = data[:, -33*3:].reshape(-1, 33, 3, 1)
+            j3dw = label.reshape(-1, 24, 3, 1)
+
+            Rwc0 = torch.tensor([[-1, 0, 0], [0, -1, 0], [0, 0, 1.]])
+            Rc0c = art.math.generate_random_rotation_matrix_constrained(n=1, y=(-180, 180), p=(-30, 30), r=(-5, 5))[0]
+            Rcw = Rwc0.mm(Rc0c).t()
+
+            accc = Rcw.matmul(accw)
+            oric = Rcw.matmul(oriw)
+            j3dc = Rcw.matmul(j3dw).squeeze(-1)
+            j3dc_mp = Rcw.matmul(j3dw_mp).squeeze(-1)
+
+            random_tranc = art.math.lerp(torch.tensor([-1, -1, 3.]), torch.tensor([1, 1, 8.]), torch.rand(3))
+            random_tranc[2] -= j3dc[..., -1].min()
+            j3dc = j3dc + random_tranc
+            j3dc_mp = j3dc_mp + random_tranc
+            j2dc = j3dc_mp / j3dc_mp[..., -1:]
+            ran = range(0, len(self.conf))
+            rand = random.sample(ran, len(accc))
+            p = self.conf[rand]
+            j2dc[..., :2] = torch.normal(j2dc[..., :2], 0.003 * (1 - p))
+            j2dc[..., -1:] = p
+            j2dc[..., :2] = j2dc[..., :2] / (get_bbox_scale(j2dc)).view(-1, 1, 1)
+            j2dc[:, 24:, :2] = j2dc[:, 24:, :2] - j2dc[:, 23:24, :2]
+            j2dc[:, :23, :2] = j2dc[:, :23, :2] - j2dc[:, 23:24, :2]
+            j3dc = j3dc[:, 1:] - j3dc[:, :1]
+            data = torch.cat((accc.flatten(1), oric.flatten(1), j2dc.flatten(1)), dim=1)
+            label = j3dc.flatten(1)
+            return augment_fn(data).to(device), label.to(device)
+
+    print_yellow('=================== Training RNN4 ===================')
+    rnn_mse_loss_fn = RNNLossWrapper(torch.nn.MSELoss())
+    rnn_dist_eval_fn = RNNLossWrapper(art.PositionErrorEvaluator())
+    save_dir = os.path.join(paths.weight_dir, Net.name, 'rnn4')
+    net = Net().rnn4.to(device)
+    train_dataloader = DataLoader(ConcatDataset([
+        AISTDataset(paths.aist_dir, kind='train', split_size=200),
+        AMASSDataset(paths.amass_dir, kind='train', split_size=200)
+    ]), 256, shuffle=True, collate_fn=RNNDataset.collate_fn)
+    valid_dataloader = DataLoader(ConcatDataset([
+        AISTDataset(paths.aist_dir, kind='val'),
+        AMASSDataset(paths.amass_dir, kind='val')
+    ]), 64, collate_fn=RNNDataset.collate_fn)
+    # train_dataloader = DataLoader(AISTDataset(paths.aist_dir, kind='train', split_size=200), 256, shuffle=True, collate_fn=RNNDataset.collate_fn)
+    # valid_dataloader = DataLoader(AISTDataset(paths.aist_dir, kind='val'), 64, collate_fn=RNNDataset.collate_fn)
+    optimizer = torch.optim.Adam(net.parameters(), lr=1e-4)
+    # after 100 epoch, use lr=1e-4 for another 50 epoch on occlusion data, then use lr=1e-4 for another 50 epoch on aist origin data
+    train(net, train_dataloader, valid_dataloader, save_dir, loss_fn=rnn_mse_loss_fn, eval_fn=rnn_dist_eval_fn,
+          num_epoch=200, num_iter_between_vald=60, clip_grad_norm=1, load_last_states=True,
+          eval_metric_names=['distance error (m)'], wandb_project_name='sig_mp',
+          wandb_config=None, wandb_watch=True, wandb_name='rnn4_final', optimizer=optimizer)
+
+def train_rnn6():
+
+    def augment_fn(x):
+        x = x.clone()
+        x[:, -69:] = torch.normal(x[:, -69:], 0.03)
+        return x
+
+    def AISTDataset(data_dir, kind, split_size=-1):
+        print('Reading %s dataset "%s"' % (kind, data_dir))
+        dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+        data, label = [], []
+        for i in tqdm.trange(len(dataset['pose'])):
+            for j in range(9):
+                if dataset['joint2d_mp'][i][j] is None: continue
+                Tcw = dataset['cam_T'][i][j]
+                Kinv = dataset['cam_K'][i][j].inverse()
+                oric = Tcw[:3, :3].matmul(dataset['imu_ori'][i])
+                accc = Tcw.matmul(art.math.append_zero(dataset['imu_acc'][i]).unsqueeze(-1)).squeeze(-1)[..., :3]
+                tranc = Tcw.matmul(art.math.append_one(dataset['tran'][i]).unsqueeze(-1)).squeeze(-1)[..., :3]
+                j3dc = Tcw.matmul(art.math.append_one(dataset['joint3d'][i]).unsqueeze(-1)).squeeze(-1)[..., :3]
+                j3dc = j3dc[:, 1:] - j3dc[:, :1]
+                # tranc = tranc - torch.tensor(tran_offset)
+                j2dc = torch.zeros(len(oric), 33, 3)
+                j2dc[..., :2] = dataset['joint2d_mp'][i][j][..., :2]
+                j2dc[..., 0] = j2dc[..., 0] * 1920
+                j2dc[..., 1] = j2dc[..., 1] * 1080
+                j2dc = Kinv.matmul(art.math.append_one(j2dc[..., :2]).unsqueeze(-1)).squeeze(-1)
+                j2dc[..., -1] = dataset['joint2d_mp'][i][j][..., -1]
+                data.append(torch.cat((accc.flatten(1), oric.flatten(1), j2dc.flatten(1), j3dc.flatten(1)), dim=1)[1:-1])
+                label.append(tranc.flatten(1)[1:-1])
+
+                # if dataset['joint2d_occ'][i][j] is None or len(dataset['joint2d_occ'][i][j]) != len(oric): continue
+                # j2dc_occ = torch.zeros(len(oric), 33, 3)
+                # j2dc_occ[..., :2] = dataset['joint2d_occ'][i][j][..., :2]
+                # j2dc_occ[..., 0] = j2dc_occ[..., 0] * 1920
+                # j2dc_occ[..., 1] = j2dc_occ[..., 1] * 1080
+                # j2dc_occ = Kinv.matmul(art.math.append_one(j2dc_occ[..., :2]).unsqueeze(-1)).squeeze(-1)
+                # j2dc_occ[..., -1] = dataset['joint2d_occ'][i][j][..., -1]
+                # data.append(torch.cat((accc.flatten(1), oric.flatten(1), j2dc_occ.flatten(1), j3dc.flatten(1)), dim=1)[1:-1])
+                # label.append(tranc.flatten(1)[1:-1])
+        return RNNDataset(data, label, split_size=split_size, device=device, augment_fn=augment_fn)
+
+    class AMASSDataset(RNNDataset):
+        r"""
+        kind in ['train', 'val', 'test']
+        """
+        def __init__(self, data_dir, kind, split_size=-1):
+            print('Reading %s dataset "%s"' % (kind, data_dir))
+            dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+            self.conf = torch.load('data/dataset_work/syn_c.pt')
+            data, label = [], []
+            for i in tqdm.trange(len(dataset['imu_acc'])):
+                accw = dataset['imu_acc'][i]  # N, 6, 3
+                oriw = dataset['imu_ori'][i]  # N, 6, 3, 3
+                root = dataset['joint3d'][i][0, 0].clone()
+                j3dw = dataset['joint3d'][i] - root  # N, 33, 3
+                j3dw_mp = dataset['sync_3d_mp'][i] - root  # N, 33, 3
+                j3dw_mp[:, 11] = j3dw[:, 16].clone()
+                j3dw_mp[:, 12] = j3dw[:, 17].clone()
+                j3dw_mp[:, 13] = j3dw[:, 18].clone()
+                j3dw_mp[:, 14] = j3dw[:, 19].clone()
+                j3dw_mp[:, 15] = j3dw[:, 20].clone()
+                j3dw_mp[:, 16] = j3dw[:, 21].clone()
+                j3dw_mp[:, 23] = j3dw[:, 1].clone()
+                j3dw_mp[:, 24] = j3dw[:, 2].clone()
+                j3dw_mp[:, 25] = j3dw[:, 4].clone()
+                j3dw_mp[:, 26] = j3dw[:, 5].clone()
+                j3dw_mp[:, 27] = j3dw[:, 7].clone()
+                j3dw_mp[:, 28] = j3dw[:, 8].clone()
+                data.append(torch.cat((accw.flatten(1), oriw.flatten(1), j3dw_mp.flatten(1)), dim=1)[1:-1])
+                label.append(j3dw.flatten(1)[1:-1])
+            super(AMASSDataset, self).__init__(data, label, split_size=split_size)
+
+        def __getitem__(self, i):
+            data, label = super(AMASSDataset, self).__getitem__(i)
+            accw = data[:, :18].reshape(-1, 6, 3, 1)
+            oriw = data[:, 18:18 + 6 * 3 * 3].reshape(-1, 6, 3, 3)
+            j3dw_mp = data[:, -33 * 3:].reshape(-1, 33, 3, 1)
+            j3dw = label.reshape(-1, 24, 3, 1)
+
+            Rwc0 = torch.tensor([[-1, 0, 0], [0, -1, 0], [0, 0, 1.]])
+            Rc0c = art.math.generate_random_rotation_matrix_constrained(n=1, y=(-90, 90), p=(-30, 30), r=(-5, 5))[0]
+            Rcw = Rwc0.mm(Rc0c).t()
+
+            accc = Rcw.matmul(accw)
+            oric = Rcw.matmul(oriw)
+            j3dc = Rcw.matmul(j3dw).squeeze(-1)
+            j3dc_mp = Rcw.matmul(j3dw_mp).squeeze(-1)
+
+            random_tranc = art.math.lerp(torch.tensor([-1, -1, 3.]), torch.tensor([1, 1, 8.]), torch.rand(3))
+            random_tranc[2] -= j3dc[..., -1].min()
+            j3dc = j3dc + random_tranc
+            j3dc_mp = j3dc_mp + random_tranc
+            j2dc = j3dc_mp / j3dc_mp[..., -1:]
+            ran = range(0, len(self.conf))
+            rand = random.sample(ran, len(accc))
+            p = self.conf[rand]
+            j2dc[..., :2] = torch.normal(j2dc[..., :2], 0.003 * (1 - p))
+            j2dc[..., -1:] = p
+            # label = j3dc[:, 0] - torch.tensor(tran_offset)
+            label = j3dc[:, 0]
+            j3dc = j3dc[:, 1:] - j3dc[:, :1]
+            data = torch.cat((accc.flatten(1), oric.flatten(1), j2dc.flatten(1), j3dc.flatten(1)), dim=1)
+            return augment_fn(data).to(device), label.to(device)
+
+    print_yellow('=================== Training RNN6 ===================')
+
+    rnn_loss_fn = RNNLossWrapper(torch.nn.MSELoss())
+    save_dir = os.path.join(paths.weight_dir, Net.name, 'rnn6')
+    net = Net().rnn6.to(device)
+    train_dataloader = DataLoader(ConcatDataset([
+        AISTDataset(paths.aist_dir, kind='train', split_size=200),
+        AMASSDataset(paths.amass_dir, kind='train', split_size=200)
+    ]), 256, shuffle=True, collate_fn=RNNDataset.collate_fn)
+    valid_dataloader = DataLoader(ConcatDataset([
+        AISTDataset(paths.aist_dir, kind='val'),
+        AMASSDataset(paths.amass_dir, kind='val')
+    ]), 64, collate_fn=RNNDataset.collate_fn)
+    train(net, train_dataloader, valid_dataloader, save_dir, loss_fn=rnn_loss_fn, eval_fn=rnn_loss_fn,
+          num_epoch=100, num_iter_between_vald=60, clip_grad_norm=1, load_last_states=True,
+          wandb_project_name='sig_mp',
+          wandb_config=None, wandb_watch=True, wandb_name='rnn6', lr_scheduler_patience=5)
+
+
+def train_rnn7():
+    def augment_fn(x):
+        x = torch.normal(x, 0.03)
+        return x
+
+    def AISTDataset(data_dir, kind, split_size=-1):
+        r"""
+        kind in ['train', 'val', 'test']
+        """
+        print('Reading %s dataset "%s"' % (kind, data_dir))
+        dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+        data, label = [], []
+        for i in tqdm.trange(len(dataset['pose'])):  # ith sequence
+            Rrw = art.math.axis_angle_to_rotation_matrix(dataset['pose'][i][:, :3]).transpose(1, 2)
+            orir = dataset['imu_ori'][i].clone()
+            orir[:, :5] = Rrw.unsqueeze(1).matmul(dataset['imu_ori'][i][:, :5])
+            accr = Rrw.unsqueeze(1).matmul(dataset['imu_acc'][i].unsqueeze(-1)).squeeze(-1)
+            j3dr = Rrw.unsqueeze(1).matmul(dataset['joint3d'][i].unsqueeze(-1)).squeeze(-1)
+            j3dr = j3dr[:, 1:] - j3dr[:, :1]
+            pose = art.math.axis_angle_to_rotation_matrix(dataset['pose'][i]).view(-1, 24, 3, 3)
+            pose[:, 0] = torch.eye(3)
+            pose = art.math.rotation_matrix_to_r6d(body_model.forward_kinematics_R(pose)).view(-1, 24, 6)
+            data.append(torch.cat((accr.flatten(1), orir.flatten(1), j3dr.flatten(1)), dim=1)[1:-1])
+            label.append(pose.flatten(1)[1:-1])
+        return RNNDataset(data, label, split_size=split_size, augment_fn=augment_fn, device=device)
+
+    def AMASSDataset(data_dir, kind, split_size=-1):
+        r"""
+        kind in ['train', 'val', 'test']
+        """
+        print('Reading %s dataset "%s"' % (kind, data_dir))
+        dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+        data, label = [], []
+        for i in tqdm.trange(len(dataset['imu_acc'])):
+            p = art.math.axis_angle_to_rotation_matrix(dataset['pose'][i]).view(-1, 24, 3, 3)
+            j3dr = (dataset['joint3d'][i][:, 1:] - dataset['joint3d'][i][:, :1]).bmm(p[:, 0])
+            accw = dataset['imu_acc'][i]
+            oriw = dataset['imu_ori'][i]
+            Rrw = p[:, 0].transpose(1, 2)
+            accr = Rrw.unsqueeze(1).matmul(accw.unsqueeze(-1))
+            orir = oriw.clone()
+            orir[:, :5] = Rrw.unsqueeze(1).matmul(oriw[:, :5])
+            p[:, 0] = torch.eye(3)
+            glbp = body_model.forward_kinematics_R(p)
+            p6d = art.math.rotation_matrix_to_r6d(glbp).view(-1, 24 * 6)
+            data.append(torch.cat((accr.flatten(1), orir.flatten(1), j3dr.flatten(1)), dim=1)[1:-1])
+            label.append(p6d.flatten(1)[1:-1])
+        return RNNDataset(data, label, split_size=split_size, augment_fn=augment_fn, device=device)
+
+    class Loss:
+        def __init__(self):
+            j = body_model.get_zero_pose_joint_and_vertex()[0]
+            self.b = body_model.joint_position_to_bone_vector(j.unsqueeze(0)).view(24, 3, 1).to(device)
+
+        @staticmethod
+        def weighted_mse(x, y, w=1):
+            return ((x - y).pow(2) * w).mean()
+
+        def forward_kinematics(self, p):
+            p = art.math.r6d_to_rotation_matrix(p).view(-1, 24, 3, 3)
+            pb = torch.stack([p[:, body_model.parent[i]].matmul(self.b[i]) for i in range(1, 24)], dim=1)
+            pb = torch.cat((torch.zeros(p.shape[0], 1, 3, device=device), pb.squeeze(-1)), dim=1)
+            return body_model.bone_vector_to_joint_position(pb)
+
+        def __call__(self, x, y):
+            l1 = self.weighted_mse(x, y)
+            l2 = self.weighted_mse(self.forward_kinematics(x), self.forward_kinematics(y))
+            return l1 + l2 * 100
+
+    print_yellow('=================== Training RNN7 ===================')
+
+    rnn_loss_fn = RNNLossWrapper(Loss())
+    save_dir = os.path.join(paths.weight_dir, Net.name, 'rnn7')
+    net = Net().rnn7.to(device)
+
+    train_dataloader = DataLoader(ConcatDataset([
+        AISTDataset(paths.aist_dir, kind='train', split_size=200),
+        AMASSDataset(paths.amass_dir, kind='train', split_size=200)
+    ]), 256, shuffle=True, collate_fn=RNNDataset.collate_fn)
+    valid_dataloader = DataLoader(ConcatDataset([
+        AISTDataset(paths.aist_dir, kind='val'),
+        AMASSDataset(paths.amass_dir, kind='val')
+    ]), 64, collate_fn=RNNDataset.collate_fn)
+
+    train(net, train_dataloader, valid_dataloader, save_dir, loss_fn=rnn_loss_fn, eval_fn=rnn_loss_fn,
+          num_epoch=120, num_iter_between_vald=20, clip_grad_norm=1, load_last_states=True,
+          wandb_project_name='sig_mp',
+          wandb_config=None, wandb_watch=True, wandb_name='rnn7', lr_scheduler_patience=5)
+
+
+def train_rnn8():
+
+    def augment_fn(x):
+        x = x.clone()
+        x[:, -69:] = torch.normal(x[:, -69:], 0.03)
+        return x
+
+    def AMASSDataset(data_dir, kind, split_size=-1):
+        r"""
+        kind in ['train', 'val', 'test']
+        """
+        print('Reading %s dataset "%s"' % (kind, data_dir))
+        dataset = torch.load(os.path.join(data_dir, kind + '.pt'))
+        data, label = [], []
+        for i in tqdm.trange(len(dataset['imu_acc'])):
+            p = art.math.axis_angle_to_rotation_matrix(dataset['pose'][i]).view(-1, 24, 3, 3)
+            j3dr = (dataset['joint3d'][i][:, 1:] - dataset['joint3d'][i][:, :1]).bmm(p[:, 0])
+            accw = dataset['imu_acc'][i]  # N, 5, 3
+            oriw = dataset['imu_ori'][i]  # N, 5, 3, 3
+            Rrw = p[:, 0].transpose(1, 2)
+            accr = Rrw.unsqueeze(1).matmul(accw.unsqueeze(-1))
+            orir = Rrw.unsqueeze(1).matmul(oriw)
+            v3dw = (dataset['joint3d'][i][2:] - dataset['joint3d'][i][:-2]) * 30
+            contacts = torch.zeros(v3dw.shape[0], 2)
+            # contacts[v3dw[:, 10:12].norm(dim=2) < 0.3] = 0.5  # todo: is this useful?
+            contacts[v3dw[:, 10:12].norm(dim=2) < 0.25] = 1
+            contacts = torch.cat((contacts[:1], contacts, contacts[-1:]), dim=0)
+            # if contacts.sum() / (v3dw.shape[0] * 2) < 0.95:
+            #     visualize_contact_foot(dataset['joint3d'][i], contacts)
+            data.append(torch.cat((accr.flatten(1), orir.flatten(1), j3dr.flatten(1)), dim=1)[1:-1])
+            label.append(contacts.flatten(1)[1:-1])
+        return RNNDataset(data, label, split_size=split_size, augment_fn=augment_fn, device=device)
+
+    print_yellow('=================== Training RNN8 ===================')
+
+    train_dataloader = DataLoader(AMASSDataset(paths.amass_dir, kind='train', split_size=200), 256, shuffle=True,
+                                  collate_fn=RNNDataset.collate_fn)
+    valid_dataloader = DataLoader(AMASSDataset(paths.amass_dir, kind='val'), 64, collate_fn=RNNDataset.collate_fn)
+
+    all_labels = torch.cat(train_dataloader.dataset.label)
+    pos_weight = (1 - all_labels).sum(dim=0) / all_labels.sum(dim=0)
+    rnn_bce_loss_fn = RNNLossWrapper(torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight.to(device)))
+
+    save_dir = os.path.join(paths.weight_dir, Net.name, 'rnn8')
+    net = Net().rnn8.to(device)
+
+    train(net, train_dataloader, valid_dataloader, save_dir, loss_fn=rnn_bce_loss_fn, eval_fn=rnn_bce_loss_fn,
+          num_epoch=80, num_iter_between_vald=20, clip_grad_norm=1, load_last_states=True,
+          wandb_project_name='sig_mp',
+          wandb_config=None, wandb_watch=True, wandb_name='rnn8', lr_scheduler_patience=10)
+
+
+if __name__ == '__main__':
+    train_rnn2()
+    train_rnn3()
+    train_rnn4()
+    train_rnn6()
+    train_rnn7()
+    train_rnn8()
+
+    net = Net()
+    net.rnn2.load_state_dict(torch.load(os.path.join(paths.weight_dir, Net.name, 'rnn2/best_weights.pt')))
+    net.rnn3.load_state_dict(torch.load(os.path.join(paths.weight_dir, Net.name, 'rnn3/best_weights.pt')))
+    net.rnn4.load_state_dict(torch.load(os.path.join(paths.weight_dir, Net.name, 'rnn4/best_weights.pt')))
+    net.rnn6.load_state_dict(torch.load(os.path.join(paths.weight_dir, Net.name, 'rnn6/best_weights.pt')))
+    net.rnn7.load_state_dict(torch.load(os.path.join(paths.weight_dir, Net.name, 'rnn7/best_weights.pt')))
+    net.rnn8.load_state_dict(torch.load(os.path.join(paths.weight_dir, Net.name, 'rnn8/best_weights.pt')))
+    torch.save(net.state_dict(), os.path.join(paths.weight_dir, Net.name, 'best_weights.pt'))

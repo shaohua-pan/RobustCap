@@ -100,6 +100,22 @@ mp_mask = [332, 2809, 2800, 455, 6260, 3634, 3621, 583, 4071, 45, 3557, 1873, 41
 vi_mask = [1961, 5424, 1176, 4662, 411, 3021]
 ji_mask = [18, 19, 4, 5, 15, 0]
 
+class Live:
+    camera_intrinsic = [[623.79949084, 0., 313.69863974], [0., 623.09646347, 236.76807598], [0., 0., 1.]]
+    camera_height = 480
+    camera_width = 640
+    camera_id = 0
+    imu_addrs = [
+    'D4:22:CD:00:36:03',
+    'D4:22:CD:00:44:6E',
+    'D4:22:CD:00:45:E6',
+    'D4:22:CD:00:45:EC',
+    'D4:22:CD:00:46:0F',
+    'D4:22:CD:00:32:32',
+    ]
+
+
+
 class Pw3d_data:
     pw3d_occluded_sequences = [
         'courtyard_backpack',
