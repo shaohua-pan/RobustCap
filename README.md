@@ -22,6 +22,7 @@ Install pytorch cuda version from the official [website](https://pytorch.org/).
 - Download the [pretrained model and data](https://drive.google.com/file/d/1oDnFd8h4mTCSYKD4zEA0AL3b6qUeUtvl/view?usp=drive_link) and place them at `data/`.
 - For AIST++ evaluation, download the [no aligned files](https://drive.google.com/file/d/12RSdlg1Px0EUgZKybqY-exUJWK9HskAD/view?usp=drive_link) and place it at `data/dataset_work/AIST`.
 - For training, download the [train data](https://cloud.tsinghua.edu.cn/d/d8d71c25f4ba478e975a/) and place them at `data/dataset_work`.
+- For training using the original data, run the detector code at `scripts/`.
 ## Evaluation
 We provide the evaluation code for AIST++, TotalCapture, 3DPW and 3DPW-OCC. The results maybe slightly different from the numbers reported in the paper due to the randomness of the optimization.
 ```
